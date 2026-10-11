@@ -1,0 +1,209 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-[#0a0a0a] text-slate-100 font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #0a0a0a; }
+  ::-webkit-scrollbar-thumb { background: #262626; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #ea580c; }
+}
+
+/* ── Glassmorphic cards ── */
+.glass-panel {
+  background: rgba(12, 12, 12, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+
+.glass-card {
+  background: linear-gradient(135deg, rgba(18,18,18,0.8) 0%, rgba(10,10,10,0.9) 100%);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.06);
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.glass-card:hover {
+  border-color: rgba(249,115,22,0.3);
+  box-shadow: 0 0 30px -5px rgba(249,115,22,0.15);
+}
+
+/* ── Ambient dot-grid background ── */
+.grid-bg {
+  background-image:
+    radial-gradient(circle, rgba(255,255,255,0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* Technical diagrams inspired by the reference architecture plates. */
+.technical-diagram {
+  position: relative;
+  aspect-ratio: 1.45;
+  overflow: hidden;
+  background: #0b0b0b;
+  color: #a8a29e;
+  font-family: 'JetBrains Mono', monospace;
+  border: 1px solid #24201d;
+}
+
+.diagram-grid {
+  position: absolute;
+  inset: 0;
+  opacity: .72;
+  background-image: radial-gradient(circle, rgba(255,255,255,.12) 1px, transparent 1px);
+  background-size: 9px 9px;
+  background-size: 9px 9px;
+  box-shadow: inset 0 -90px 120px rgba(0, 0, 0, .58);
+}
+
+.diagram-kicker, .diagram-index, .diagram-caption, .diagram-port {
+  position: absolute;
+  z-index: 2;
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.diagram-kicker { top: 18px; left: 20px; color: #57534e; }
+.diagram-index { right: 20px; bottom: 16px; color: #7c2d12; font-size: 18px; }
+.diagram-caption { color: #a8a29e; }
+.diagram-caption-top { top: 58px; left: 20px; color: #c2410c; }
+.diagram-caption-bottom { right: 20px; bottom: 18px; color: #57534e; }
+
+.diagram-node {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  border: 1px solid #57534e;
+  background: rgba(20, 18, 16, .94);
+  color: #d6d3d1;
+  font-size: 12px;
+  transform: rotate(45deg);
+}
+.diagram-node span { transform: rotate(-45deg); }
+.diagram-node-main { left: 22%; top: 39%; }
+.diagram-node-tool { right: 22%; top: 39%; }
+.diagram-node-center { left: calc(50% - 38px); top: calc(50% - 38px); }
+.diagram-node-accent { border-color: #9a3412; color: #fb923c; background: rgba(67, 35, 20, .72); }
+.diagram-line { position: absolute; z-index: 1; background: #7c2d12; }
+.diagram-line-horizontal { left: 35%; right: 35%; top: 51%; height: 1px; }
+.diagram-line-vertical { left: 50%; top: 53%; bottom: 28%; width: 1px; }
+.diagram-stack { position: absolute; right: 17%; bottom: 19%; display: grid; gap: 5px; color: #78716c; font-size: 9px; }
+.diagram-stack span { border: 1px solid #292524; padding: 5px 9px; background: #11100f; }
+.diagram-caption-bottom { color: #78716c; }
+
+.diagram-shield { position: absolute; left: calc(50% - 67px); top: calc(50% - 77px); z-index: 2; width: 134px; height: 154px; border: 1px solid #7c2d12; clip-path: polygon(50% 0, 100% 20%, 86% 78%, 50% 100%, 14% 78%, 0 20%); display: grid; place-items: center; color: #c2410c; font-size: 9px; text-transform: uppercase; }
+.diagram-ring { position: absolute; left: calc(50% - 98px); top: calc(50% - 98px); width: 196px; height: 196px; border: 1px dashed #292524; border-radius: 50%; }
+.diagram-ring-two { left: calc(50% - 130px); top: calc(50% - 130px); width: 260px; height: 260px; border-color: #1c1917; }
+.diagram-port { color: #78716c; }
+.diagram-port-top { top: 22%; left: 46%; }
+.diagram-port-right { top: 49%; right: 14%; }
+.diagram-port-bottom { bottom: 17%; left: 44%; }
+.diagram-port-left { top: 49%; left: 14%; }
+
+.diagram-memory-layer { position: absolute; left: 22%; width: 56%; height: 50px; display: grid; place-items: center; border: 1px solid #57534e; background: rgba(20, 18, 16, .94); font-size: 11px; transform: skewY(-8deg); }
+.diagram-memory-top { top: 25%; border-color: #9a3412; color: #fb923c; }
+.diagram-memory-mid { top: 41%; color: #d6d3d1; }
+.diagram-memory-bottom { top: 57%; color: #78716c; }
+.diagram-connector { position: absolute; top: 50%; width: 12%; height: 1px; background: #7c2d12; }
+.diagram-connector-left { left: 10%; }
+.diagram-connector-right { right: 10%; }
+
+.diagram-bars { position: absolute; left: 14%; right: 14%; top: 30%; display: grid; gap: 12px; }
+.diagram-bars > div { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 10px; color: #78716c; font-size: 9px; }
+.diagram-bars i { display: block; height: 8px; border: 1px solid #7c2d12; background: linear-gradient(90deg, #9a3412, #431407); transform: skewX(-18deg); }
+.diagram-bars > div:first-child { color: #fb923c; }
+.diagram-bars > div:first-child i { background: #c2410c; }
+.diagram-stat { position: absolute; right: 14%; bottom: 22%; color: #fb923c; font-size: 26px; }
+.diagram-stat span { margin-left: 4px; color: #78716c; font-size: 10px; text-transform: uppercase; }
+
+.technical-diagram-architecture { aspect-ratio: 2.35; }
+.architecture-layer { position: absolute; left: 29%; width: 42%; height: 62px; z-index: 2; display: grid; place-items: center; border: 1px solid #57534e; background: rgba(20, 18, 16, .96); color: #d6d3d1; font-size: 12px; transform: skewY(-6deg); }
+.architecture-layer span { color: #78716c; font-size: 9px; text-transform: uppercase; }
+.architecture-layer-top { top: 22%; border-color: #9a3412; color: #fb923c; }
+.architecture-layer-mid { top: 39%; }
+.architecture-layer-bottom { top: 56%; color: #a8a29e; }
+.architecture-rail { position: absolute; top: 49%; z-index: 2; display: flex; align-items: center; gap: 8px; color: #78716c; font: 9px 'JetBrains Mono', monospace; text-transform: uppercase; }
+.architecture-rail i { display: block; width: 52px; height: 1px; background: #7c2d12; }
+.architecture-rail-left { left: 10%; }
+.architecture-rail-right { right: 10%; }
+
+@media (max-width: 640px) {
+  .technical-diagram-architecture { aspect-ratio: 1.35; }
+  .architecture-layer { left: 24%; width: 52%; height: 54px; font-size: 10px; }
+  .architecture-rail { display: none; }
+}
+
+@media (max-width: 640px) {
+  .technical-diagram { aspect-ratio: 1.25; }
+}
+
+/* ── Orange glow helpers ── */
+.glow-orange { text-shadow: 0 0 24px rgba(249,115,22,0.55); }
+.glow-grey   { text-shadow: 0 0 24px rgba(156,163,175,0.4); }
+
+/* ── Marquee / ticker ── */
+@keyframes marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee 28s linear infinite;
+}
+
+.marquee-track:hover {
+  animation-play-state: paused;
+}
+
+/* ── Floating orb animations ── */
+@keyframes floatA {
+  0%, 100% { transform: translateY(0px) translateX(0px); }
+  33%       { transform: translateY(-18px) translateX(8px); }
+  66%       { transform: translateY(10px) translateX(-6px); }
+}
+@keyframes floatB {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  50%       { transform: translateY(-14px) rotate(6deg); }
+}
+@keyframes pulseRing {
+  0%   { box-shadow: 0 0 0 0 rgba(249,115,22,0.4); }
+  70%  { box-shadow: 0 0 0 18px rgba(249,115,22,0); }
+  100% { box-shadow: 0 0 0 0 rgba(249,115,22,0); }
+}
+@keyframes scanline {
+  0%   { top: -4px; opacity: 0.6; }
+  100% { top: 100%; opacity: 0; }
+}
+
+.float-a { animation: floatA 7s ease-in-out infinite; }
+.float-b { animation: floatB 5s ease-in-out infinite; }
+.pulse-ring { animation: pulseRing 2.2s ease-out infinite; }
+
+/* scanline effect inside code blocks */
+.scan-wrapper { position: relative; overflow: hidden; }
+.scan-wrapper::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; height: 3px;
+  background: linear-gradient(to bottom, transparent, rgba(249,115,22,0.35), transparent);
+  animation: scanline 3.5s linear infinite;
+}
+
+/* code font */
+.code-font { font-family: 'JetBrains Mono', monospace; }

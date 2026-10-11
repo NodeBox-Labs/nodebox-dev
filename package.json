@@ -1,0 +1,55 @@
+{
+  "name": "nodebox",
+  "version": "1.4.2",
+  "type": "module",
+  "description": "Ephemeral Node.js V8 Isolate Sandboxes for Autonomous AI Agents and Isolated Code Execution",
+  "author": "NodeBox Labs (https://github.com/nodebox-dev)",
+  "license": "MIT",
+  "homepage": "https://github.com/nodebox-dev/nodebox",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nodebox-dev/nodebox.git"
+  },
+  "keywords": [
+    "sandbox",
+    "v8-isolate",
+    "ai-agents",
+    "mcp",
+    "model-context-protocol",
+    "ephemeral-runtime",
+    "microvm",
+    "containers",
+    "security-isolation",
+    "posix-memfs"
+  ],
+  "main": "./dist/sdk/index.js",
+  "module": "./dist/sdk/index.js",
+  "types": "./dist/sdk/index.d.ts",
+  "bin": {
+    "nodebox": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "lint": "tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.469.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

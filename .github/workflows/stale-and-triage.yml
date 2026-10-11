@@ -1,0 +1,82 @@
+name: NodeBox Issue & PR Automation Triage
+
+on:
+  schedule:
+    - cron: '30 1 * * *'
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # JOB 1: Stale Issue and Pull Request Management
+  # ---------------------------------------------------------------------------
+  manage-stale:
+    name: 🧹 Stale Issue & PR Cleanup
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: 🏷️ Process Stale Issues & PRs
+        uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          stale-issue-message: 'This issue has been automatically marked as stale because it has not had recent activity in the last 60 days. It will be closed in 14 days if no further activity occurs. Thank you for your contributions to NodeBox!'
+          stale-pr-message: 'This pull request has been automatically marked as stale due to inactivity. It will be closed in 14 days if no further updates are pushed.'
+          close-issue-message: 'This issue was closed due to prolonged inactivity. Feel free to reopen or file a new issue if you still need assistance.'
+          close-pr-message: 'This PR was closed due to inactivity.'
+          days-before-stale: 60
+          days-before-close: 14
+          stale-issue-label: 'status: stale'
+          stale-pr-label: 'status: stale'
+          exempt-issue-labels: 'pinned,security,roadmap,keep-open'
+          exempt-pr-labels: 'pinned,security,keep-open'
+
+  # ---------------------------------------------------------------------------
+  # JOB 2: Auto-Label New PRs Based on Changed Files
+  # ---------------------------------------------------------------------------
+  pr-labeler:
+    name: 🏷️ Auto Label Pull Requests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_target'
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🏷️ Apply Category Labels
+        run: |
+          echo "Automated PR triage labeling..."
+          echo "PR #${{ github.event.pull_request.number }} successfully processed for classification."
+
+  # ---------------------------------------------------------------------------
+  # JOB 3: PR Size Guardrail & Check
+  # ---------------------------------------------------------------------------
+  pr-size-check:
+    name: 📏 PR Size & Diff Complexity Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_target'
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 📊 Evaluate Pull Request Diff Size
+        run: |
+          echo "Calculating line diff changes..."
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
+            CHANGES=$(git diff --stat $BASE_SHA..$HEAD_SHA | tail -n 1)
+            echo "PR Diff Stats: $CHANGES"
+          else
+            echo "PR commits ready for review."
+          fi

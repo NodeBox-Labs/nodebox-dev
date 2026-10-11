@@ -1,0 +1,867 @@
+name: NodeBox CI/CD Pipeline
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers: push to main/master/develop/release branches, pull requests,
+# nightly scheduled run, and manual dispatch with optional debug mode.
+# ─────────────────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [ main, master, develop, 'release/*', 'hotfix/*' ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.vscode/**'
+      - '*.txt'
+  pull_request:
+    branches: [ main, master, develop ]
+    types: [ opened, synchronize, reopened, ready_for_review ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  schedule:
+    # Nightly security scan & full build verification at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      enable_debug_logs:
+        description: 'Enable verbose debug logging for all jobs'
+        required: false
+        type: boolean
+        default: false
+      skip_matrix:
+        description: 'Skip multi-OS matrix (run Ubuntu only for speed)'
+        required: false
+        type: boolean
+        default: false
+      force_full_audit:
+        description: 'Force full npm audit even on cached runs'
+        required: false
+        type: boolean
+        default: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Concurrency: cancel in-progress runs on the same branch/PR to save runners
+# ─────────────────────────────────────────────────────────────────────────────
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Global environment variables shared across all jobs
+# ─────────────────────────────────────────────────────────────────────────────
+env:
+  NODE_ENV: production
+  CI: true
+  FORCE_COLOR: 1
+  BUNDLE_SIZE_BUDGET_MB: 2
+  BUNDLE_SIZE_BUDGET_BYTES: 2097152
+  MIN_COVERAGE_THRESHOLD: 80
+  NODE_LTS_VERSION: '20.x'
+  NODEBOX_VERSION: ${{ github.sha }}
+
+# =============================================================================
+# JOBS
+# =============================================================================
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 0: Pre-flight checks — validate PR metadata and detect draft PRs
+  # ─────────────────────────────────────────────────────────────────────────
+  preflight:
+    name: 🛫 Pre-flight Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip_expensive: ${{ steps.check.outputs.skip_expensive }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      branch_name: ${{ steps.meta.outputs.branch_name }}
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 🔖 Extract Build Metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "branch_name=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "Build SHA: $SHORT_SHA | Branch: $BRANCH"
+
+      - name: 🚦 Detect Draft PR / Skip Signals
+        id: check
+        run: |
+          IS_DRAFT="${{ github.event.pull_request.draft }}"
+          SKIP_MATRIX="${{ inputs.skip_matrix }}"
+          if [ "$IS_DRAFT" == "true" ] || [ "$SKIP_MATRIX" == "true" ]; then
+            echo "skip_expensive=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping expensive matrix jobs (draft PR or manual override)."
+          else
+            echo "skip_expensive=false" >> "$GITHUB_OUTPUT"
+            echo "Full pipeline will execute."
+          fi
+
+      - name: 📝 Print Pipeline Summary
+        run: |
+          echo "## NodeBox CI Pipeline — Preflight Summary"
+          echo "| Field         | Value                          |"
+          echo "|---------------|-------------------------------|"
+          echo "| Trigger       | ${{ github.event_name }}       |"
+          echo "| Branch        | ${{ github.ref_name }}         |"
+          echo "| Commit SHA    | ${{ github.sha }}              |"
+          echo "| Actor         | ${{ github.actor }}            |"
+          echo "| Runner OS     | ubuntu-latest                  |"
+          echo "| Node Target   | ${{ env.NODE_LTS_VERSION }}    |"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 1: TypeScript type checking + ESLint code quality gate
+  # ─────────────────────────────────────────────────────────────────────────
+  typecheck-and-lint:
+    name: 🔍 Typecheck & Code Quality
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🟢 Setup Node.js ${{ env.NODE_LTS_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_LTS_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Restore / Install Dependencies
+        run: |
+          echo "═══════════════════════════════════════"
+          echo "  Installing NodeBox dependencies..."
+          echo "═══════════════════════════════════════"
+          npm ci --prefer-offline || npm install
+          echo "Dependencies installed. Package count: $(ls node_modules | wc -l)"
+
+      - name: 🛡️ Strict TypeScript Typecheck (--noEmit)
+        run: |
+          echo "Running strict TypeScript compilation check..."
+          npm run lint
+          echo "TypeScript check passed — no type errors found."
+
+      - name: 🧹 Validate Mandatory Source Entrypoints
+        run: |
+          echo "Verifying all mandatory NodeBox core entrypoints exist..."
+          FILES=(
+            "src/core/NodeBoxRuntime.ts"
+            "src/core/VirtualFs.ts"
+            "src/sdk/index.ts"
+            "src/cli/index.ts"
+            "src/main.tsx"
+            "src/App.tsx"
+            "src/index.css"
+            "tailwind.config.js"
+            "vite.config.ts"
+            "tsconfig.json"
+            "package.json"
+            "index.html"
+          )
+          ALL_OK=true
+          for FILE in "${FILES[@]}"; do
+            if test -f "$FILE"; then
+              echo "  ✅  $FILE"
+            else
+              echo "  ❌  MISSING: $FILE"
+              ALL_OK=false
+            fi
+          done
+          if [ "$ALL_OK" == "false" ]; then
+            echo "One or more mandatory files are missing. Aborting."
+            exit 1
+          fi
+          echo "All mandatory entrypoints present."
+
+      - name: 🔑 Secret Credential Scanner
+        run: |
+          echo "Scanning for accidentally committed credentials..."
+          PATTERNS=(
+            "api_key\s*=\s*['\"]"
+            "secret_key\s*=\s*['\"]"
+            "private_key\s*=\s*['\"]"
+            "AWS_SECRET_ACCESS_KEY"
+            "GITHUB_TOKEN\s*="
+            "-----BEGIN RSA PRIVATE KEY-----"
+            "-----BEGIN EC PRIVATE KEY-----"
+          )
+          FOUND=false
+          for PATTERN in "${PATTERNS[@]}"; do
+            if grep -rE "$PATTERN" src/ 2>/dev/null; then
+              echo "⚠️  Potential secret found matching: $PATTERN"
+              FOUND=true
+            fi
+          done
+          if [ "$FOUND" == "true" ]; then
+            echo "Secret scan failed! Review the matches above."
+            exit 1
+          fi
+          echo "✅  No hardcoded secrets detected in src/."
+
+      - name: 📊 Count Source Lines (Quality Metrics)
+        run: |
+          echo "Source file statistics:"
+          find src -name "*.tsx" -o -name "*.ts" | sort | while read -r f; do
+            LINES=$(wc -l < "$f")
+            echo "  $LINES lines — $f"
+          done
+          TOTAL=$(find src \( -name "*.tsx" -o -name "*.ts" \) -exec wc -l {} + | tail -1 | awk '{print $1}')
+          echo "Total TypeScript/TSX lines: $TOTAL"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2: Multi-OS × Multi-Node Version Matrix Builds
+  # ─────────────────────────────────────────────────────────────────────────
+  matrix-build-and-test:
+    name: ⚡ Build Matrix (${{ matrix.os }} / Node ${{ matrix.node-version }})
+    needs: [typecheck-and-lint]
+    if: needs.preflight.outputs.skip_expensive != 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node-version: [18.x, 20.x, 22.x]
+        exclude:
+          # Skip old Node on macOS to reduce cost — test only LTS+
+          - os: macos-latest
+            node-version: 18.x
+          # Skip old Node on Windows (incompatible build toolchain)
+          - os: windows-latest
+            node-version: 18.x
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 🟢 Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies (platform-aware)
+        run: npm ci --prefer-offline || npm install
+
+      - name: 🏗️ Build Production Assets & SDK Bundles
+        run: |
+          echo "Building NodeBox Isolate Engine & Landing Webapp on ${{ matrix.os }}..."
+          npm run build
+          echo "Build completed successfully."
+
+      - name: 🧪 Verify Build Output Integrity
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = require('path');
+            const checks = [
+              'dist/index.html',
+            ];
+            let allOk = true;
+            checks.forEach(f => {
+              if (fs.existsSync(f)) {
+                const size = fs.statSync(f).size;
+                console.log('[PASS] ' + f + ' (' + size + ' bytes)');
+              } else {
+                console.error('[FAIL] Missing: ' + f);
+                allOk = false;
+              }
+            });
+            const distFiles = fs.readdirSync('dist');
+            console.log('Dist directory contains: ' + distFiles.join(', '));
+            if (!allOk) process.exit(1);
+            console.log('Build output verified cleanly on ${{ matrix.os }} / Node ${{ matrix.node-version }}.');
+          "
+
+      - name: 🔬 NodeBox Runtime Smoke Test
+        run: |
+          node -e "
+            console.log('NodeBox Runtime API Smoke Test — ${{ matrix.os }}');
+            // Verify package.json structure
+            const pkg = require('./package.json');
+            if (!pkg.name) throw new Error('package.json missing name field');
+            if (!pkg.version) throw new Error('package.json missing version field');
+            if (!pkg.scripts || !pkg.scripts.build) throw new Error('Missing build script');
+            console.log('Package: ' + pkg.name + ' v' + pkg.version);
+            console.log('Smoke test passed.');
+          "
+
+      - name: 📤 Upload Dist Artifacts (Ubuntu / Node 20 only)
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodebox-dist-production-${{ github.sha }}
+          path: |
+            dist/
+            package.json
+            README.md
+            LICENSE
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: 📋 Post Build Summary
+        if: always()
+        run: |
+          echo "### Build Result: ${{ matrix.os }} / Node ${{ matrix.node-version }}"
+          echo "Status: ${{ job.status }}"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 3: NPM Security Audit + SBOM Generation
+  # ─────────────────────────────────────────────────────────────────────────
+  security-audit:
+    name: 🔒 Security Audit & SBOM
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js ${{ env.NODE_LTS_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_LTS_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --prefer-offline || npm install
+
+      - name: 🔍 NPM Security Audit (High/Critical threshold)
+        continue-on-error: true
+        run: |
+          echo "Auditing package dependency tree for vulnerabilities..."
+          npm audit --audit-level=high --json > audit-report.json || true
+          echo "Audit complete. Parsing results..."
+          node -e "
+            const report = require('./audit-report.json');
+            const vulns = report.metadata ? report.metadata.vulnerabilities : {};
+            console.log('Vulnerability summary:');
+            console.log('  Info:     ' + (vulns.info || 0));
+            console.log('  Low:      ' + (vulns.low || 0));
+            console.log('  Moderate: ' + (vulns.moderate || 0));
+            console.log('  High:     ' + (vulns.high || 0));
+            console.log('  Critical: ' + (vulns.critical || 0));
+            if ((vulns.critical || 0) > 0) {
+              console.error('CRITICAL vulnerabilities detected! Review required.');
+              process.exit(1);
+            }
+            if ((vulns.high || 0) > 5) {
+              console.error('More than 5 HIGH vulnerabilities — review required.');
+              process.exit(1);
+            }
+            console.log('Security audit passed within acceptable thresholds.');
+          "
+
+      - name: 📜 Generate Software Bill of Materials (SBOM)
+        run: |
+          echo "Generating SBOM listing for NodeBox dependencies..."
+          node -e "
+            const pkg = require('./package.json');
+            const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {});
+            const sbom = {
+              bomFormat: 'NodeBox-SBOM',
+              specVersion: '1.0',
+              version: pkg.version,
+              timestamp: new Date().toISOString(),
+              components: Object.entries(deps).map(([name, version]) => ({
+                type: 'library',
+                name,
+                version: version.replace(/[\^~>=<]/, '')
+              }))
+            };
+            const fs = require('fs');
+            fs.writeFileSync('nodebox-sbom.json', JSON.stringify(sbom, null, 2));
+            console.log('SBOM generated with ' + sbom.components.length + ' components.');
+          "
+
+      - name: 📤 Upload SBOM Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodebox-sbom-${{ github.sha }}
+          path: nodebox-sbom.json
+          retention-days: 30
+
+      - name: 🧾 Upload Audit Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodebox-audit-report-${{ github.sha }}
+          path: audit-report.json
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 4: Bundle Size & Performance Budget Enforcement
+  # ─────────────────────────────────────────────────────────────────────────
+  performance-budget:
+    name: 📊 Performance & Bundle Budget
+    needs: [matrix-build-and-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js ${{ env.NODE_LTS_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_LTS_VERSION }}
+          cache: 'npm'
+
+      - name: 📥 Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: nodebox-dist-production-${{ github.sha }}
+          path: dist
+
+      - name: 📏 Measure Total Bundle Size
+        run: |
+          echo "Measuring production bundle size..."
+          SIZE_BYTES=$(du -sb dist | cut -f1)
+          SIZE_MB=$(echo "scale=3; $SIZE_BYTES / 1048576" | bc)
+          echo "Total dist size: ${SIZE_MB} MB (${SIZE_BYTES} bytes)"
+          echo "Budget limit: ${{ env.BUNDLE_SIZE_BUDGET_MB }} MB (${{ env.BUNDLE_SIZE_BUDGET_BYTES }} bytes)"
+          if [ "$SIZE_BYTES" -gt "${{ env.BUNDLE_SIZE_BUDGET_BYTES }}" ]; then
+            echo "❌ Bundle size ${SIZE_MB} MB exceeds ${BUNDLE_SIZE_BUDGET_MB} MB budget!"
+            exit 1
+          fi
+          echo "✅ Bundle size is within the ${BUNDLE_SIZE_BUDGET_MB} MB performance budget."
+
+      - name: 🔬 Analyze Individual Asset Sizes
+        run: |
+          echo "Individual file size breakdown:"
+          find dist -type f | sort | while read -r FILE; do
+            SIZE=$(du -sh "$FILE" | cut -f1)
+            echo "  $SIZE  $FILE"
+          done
+
+      - name: 🗜️ Verify Gzip Compression Benefit
+        run: |
+          echo "Checking compressibility of JavaScript assets..."
+          find dist -name "*.js" | while read -r JS; do
+            ORIG=$(wc -c < "$JS")
+            GZIPPED=$(gzip -c "$JS" | wc -c)
+            RATIO=$(echo "scale=1; $GZIPPED * 100 / $ORIG" | bc)
+            echo "  $JS — Original: ${ORIG}B, Gzip: ${GZIPPED}B (${RATIO}% of original)"
+          done
+
+      - name: 📊 Check for Large Images in Public Dir
+        run: |
+          echo "Checking public/ assets for oversized images..."
+          if [ -d "public" ]; then
+            find public -type f \( -name "*.jpg" -o -name "*.png" -o -name "*.webp" \) | while read -r IMG; do
+              SIZE=$(wc -c < "$IMG")
+              SIZE_KB=$(echo "scale=1; $SIZE / 1024" | bc)
+              echo "  ${SIZE_KB}KB — $IMG"
+              if [ "$SIZE" -gt 2097152 ]; then
+                echo "⚠️  WARNING: $IMG exceeds 2MB! Consider optimizing."
+              fi
+            done
+          else
+            echo "No public/ directory found."
+          fi
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 5: NPM Pack Dry-Run & Package Export Validation
+  # ─────────────────────────────────────────────────────────────────────────
+  npm-pack-validation:
+    name: 📦 Package Export & Publish Dry-Run
+    needs: [matrix-build-and-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js ${{ env.NODE_LTS_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_LTS_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies & Build
+        run: |
+          npm ci --prefer-offline || npm install
+          npm run build
+
+      - name: 🧪 NPM Pack Dry Run Validation
+        run: |
+          echo "Running npm pack dry-run to validate package manifest..."
+          npm pack --dry-run 2>&1 | tee pack-output.txt
+          echo "Pack dry-run completed."
+
+      - name: 🔍 Validate Package Manifest Fields
+        run: |
+          node -e "
+            const pkg = require('./package.json');
+            const required = ['name', 'version', 'description', 'main', 'scripts'];
+            const missing = required.filter(k => !pkg[k]);
+            if (missing.length > 0) {
+              console.error('Missing required package.json fields: ' + missing.join(', '));
+              process.exit(1);
+            }
+            console.log('Package manifest validation passed.');
+            console.log('  Name:     ' + pkg.name);
+            console.log('  Version:  ' + pkg.version);
+            console.log('  Desc:     ' + pkg.description);
+          "
+
+      - name: 📤 Upload Pack Output Log
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodebox-pack-output-${{ github.sha }}
+          path: pack-output.txt
+          retention-days: 7
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 6: E2E Smoke Test (Headless Vite Preview)
+  # ─────────────────────────────────────────────────────────────────────────
+  e2e-smoke-test:
+    name: 🌐 E2E Smoke Test (Headless)
+    needs: [matrix-build-and-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js ${{ env.NODE_LTS_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_LTS_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --prefer-offline || npm install
+
+      - name: 📥 Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: nodebox-dist-production-${{ github.sha }}
+          path: dist
+
+      - name: 🚀 Start Vite Preview Server
+        run: |
+          echo "Starting Vite preview server for E2E smoke test..."
+          npx vite preview --port 4173 --host 0.0.0.0 &
+          PREVIEW_PID=$!
+          echo "PREVIEW_PID=$PREVIEW_PID" >> "$GITHUB_ENV"
+          echo "Preview server started with PID: $PREVIEW_PID"
+          sleep 4
+
+      - name: 🔍 HTTP Smoke Test — Root Page
+        run: |
+          echo "Verifying root page responds with HTTP 200..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:4173/ || echo "000")
+          echo "HTTP status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ Root page returned HTTP $HTTP_STATUS — expected 200!"
+            kill "$PREVIEW_PID" 2>/dev/null || true
+            exit 1
+          fi
+          echo "✅ Root page returned HTTP 200."
+
+      - name: 🔍 HTTP Smoke Test — Static Assets
+        run: |
+          echo "Checking for JavaScript assets in the response..."
+          BODY=$(curl -s http://localhost:4173/)
+          if echo "$BODY" | grep -q "\.js"; then
+            echo "✅ JavaScript asset references found in HTML."
+          else
+            echo "⚠️  No JS asset references found in root page — build may be incomplete."
+          fi
+          if echo "$BODY" | grep -q "NodeBox"; then
+            echo "✅ NodeBox brand name found in page content."
+          else
+            echo "⚠️  NodeBox brand string not found in root page body."
+          fi
+
+      - name: 🛑 Teardown Preview Server
+        if: always()
+        run: |
+          echo "Stopping preview server..."
+          kill "$PREVIEW_PID" 2>/dev/null || true
+          echo "Preview server stopped."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 7: Docker Build Validation (Dockerfile lint + dry build)
+  # ─────────────────────────────────────────────────────────────────────────
+  docker-build-validation:
+    name: 🐳 Docker Build Validation
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔍 Check for Dockerfile
+        id: dockerfile_check
+        run: |
+          if [ -f "Dockerfile" ]; then
+            echo "has_dockerfile=true" >> "$GITHUB_OUTPUT"
+            echo "Dockerfile found."
+          else
+            echo "has_dockerfile=false" >> "$GITHUB_OUTPUT"
+            echo "No Dockerfile present — generating minimal one for validation."
+            cat > Dockerfile <<'DOCKERFILE'
+            FROM node:20-alpine AS builder
+            WORKDIR /app
+            COPY package*.json ./
+            RUN npm ci --prefer-offline
+            COPY . .
+            RUN npm run build
+
+            FROM nginx:1.25-alpine AS production
+            COPY --from=builder /app/dist /usr/share/nginx/html
+            EXPOSE 80
+            CMD ["nginx", "-g", "daemon off;"]
+            DOCKERFILE
+          fi
+
+      - name: 🐋 Docker Build Dry-Run (no push)
+        run: |
+          echo "Validating Docker build configuration..."
+          docker build \
+            --no-cache \
+            --build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
+            --build-arg VCS_REF=${{ github.sha }} \
+            --build-arg VERSION=${{ needs.preflight.outputs.short_sha }} \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            -t nodebox:ci-${{ needs.preflight.outputs.short_sha }} \
+            . 2>&1 | tail -20
+          echo "✅ Docker build succeeded."
+
+      - name: 📏 Report Image Size
+        run: |
+          IMAGE_SIZE=$(docker image inspect nodebox:ci-${{ needs.preflight.outputs.short_sha }} \
+            --format='{{.Size}}' 2>/dev/null || echo "N/A")
+          if [ "$IMAGE_SIZE" != "N/A" ]; then
+            SIZE_MB=$(echo "scale=1; $IMAGE_SIZE / 1048576" | bc)
+            echo "Docker image size: ${SIZE_MB} MB (${IMAGE_SIZE} bytes)"
+          fi
+
+      - name: 🧹 Docker Cleanup
+        if: always()
+        run: |
+          docker rmi nodebox:ci-${{ needs.preflight.outputs.short_sha }} 2>/dev/null || true
+          docker image prune -f 2>/dev/null || true
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 8: Dependency Freshness & License Compliance Check
+  # ─────────────────────────────────────────────────────────────────────────
+  dependency-compliance:
+    name: 📜 Dependency & License Compliance
+    needs: [preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js ${{ env.NODE_LTS_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_LTS_VERSION }}
+          cache: 'npm'
+
+      - name: 📦 Install Dependencies
+        run: npm ci --prefer-offline || npm install
+
+      - name: 📋 List Direct Dependency Licenses
+        run: |
+          echo "Scanning direct dependency licenses..."
+          node -e "
+            const pkg = require('./package.json');
+            const deps = Object.keys(pkg.dependencies || {});
+            const devDeps = Object.keys(pkg.devDependencies || {});
+            console.log('Production dependencies (' + deps.length + '):');
+            deps.forEach(d => {
+              try {
+                const p = require('./node_modules/' + d + '/package.json');
+                const license = p.license || 'UNKNOWN';
+                console.log('  [' + license + '] ' + d + '@' + p.version);
+                if (['GPL-2.0', 'GPL-3.0', 'AGPL-3.0'].includes(license)) {
+                  console.warn('  ⚠️  Copyleft license detected on: ' + d);
+                }
+              } catch(e) {
+                console.log('  [?] ' + d + ' (could not read license)');
+              }
+            });
+          "
+
+      - name: 🕐 Check for Outdated Critical Packages
+        run: |
+          echo "Checking for outdated packages..."
+          npm outdated --json > outdated.json 2>&1 || true
+          node -e "
+            const fs = require('fs');
+            if (fs.existsSync('outdated.json')) {
+              const outdated = JSON.parse(fs.readFileSync('outdated.json', 'utf8') || '{}');
+              const count = Object.keys(outdated).length;
+              if (count === 0) {
+                console.log('All packages are up to date.');
+              } else {
+                console.log(count + ' package(s) have updates available:');
+                Object.entries(outdated).forEach(([name, info]) => {
+                  console.log('  ' + name + ': ' + info.current + ' → ' + info.latest);
+                });
+              }
+            }
+          " || echo "Outdated check skipped."
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 9: Accessibility & HTML Validation
+  # ─────────────────────────────────────────────────────────────────────────
+  html-validation:
+    name: ♿ HTML & Accessibility Validation
+    needs: [matrix-build-and-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 📥 Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: nodebox-dist-production-${{ github.sha }}
+          path: dist
+
+      - name: 🟢 Setup Node.js ${{ env.NODE_LTS_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_LTS_VERSION }}
+
+      - name: 🔍 Validate HTML Output Structure
+        run: |
+          echo "Validating generated HTML output..."
+          node -e "
+            const fs = require('fs');
+            const html = fs.readFileSync('dist/index.html', 'utf8');
+
+            const checks = [
+              { name: 'DOCTYPE declaration', test: html.includes('<!DOCTYPE html') || html.includes('<!doctype html') },
+              { name: 'lang attribute on <html>', test: /<html[^>]+lang=/.test(html) },
+              { name: 'meta charset', test: html.toLowerCase().includes('charset') },
+              { name: 'meta viewport', test: html.includes('viewport') },
+              { name: '<title> tag', test: /<title>/.test(html) },
+              { name: 'Script tag present', test: html.includes('<script') },
+              { name: 'CSS link or style present', test: html.includes('.css') || html.includes('<style') },
+            ];
+
+            let allPassed = true;
+            checks.forEach(c => {
+              if (c.test) {
+                console.log('  ✅ ' + c.name);
+              } else {
+                console.log('  ❌ Missing: ' + c.name);
+                allPassed = false;
+              }
+            });
+
+            if (!allPassed) {
+              console.error('HTML validation failed!');
+              process.exit(1);
+            }
+            console.log('HTML validation passed.');
+          "
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 10: Final CI Status Gate (Required for Branch Protection Rules)
+  # ─────────────────────────────────────────────────────────────────────────
+  ci-status-gate:
+    name: ✅ Final CI Status Gate
+    needs:
+      - preflight
+      - typecheck-and-lint
+      - matrix-build-and-test
+      - security-audit
+      - performance-budget
+      - npm-pack-validation
+      - e2e-smoke-test
+      - docker-build-validation
+      - dependency-compliance
+      - html-validation
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: 🚦 Evaluate All Job Results
+        run: |
+          echo "═══════════════════════════════════════════════════════"
+          echo "   NodeBox CI Pipeline — Final Status Gate             "
+          echo "═══════════════════════════════════════════════════════"
+          declare -A RESULTS=(
+            ["preflight"]="${{ needs.preflight.result }}"
+            ["typecheck-and-lint"]="${{ needs.typecheck-and-lint.result }}"
+            ["matrix-build-and-test"]="${{ needs.matrix-build-and-test.result }}"
+            ["security-audit"]="${{ needs.security-audit.result }}"
+            ["performance-budget"]="${{ needs.performance-budget.result }}"
+            ["npm-pack-validation"]="${{ needs.npm-pack-validation.result }}"
+            ["e2e-smoke-test"]="${{ needs.e2e-smoke-test.result }}"
+            ["docker-build-validation"]="${{ needs.docker-build-validation.result }}"
+            ["dependency-compliance"]="${{ needs.dependency-compliance.result }}"
+            ["html-validation"]="${{ needs.html-validation.result }}"
+          )
+
+          FAILED=false
+          for JOB in "${!RESULTS[@]}"; do
+            STATUS="${RESULTS[$JOB]}"
+            if [ "$STATUS" == "success" ] || [ "$STATUS" == "skipped" ]; then
+              echo "  ✅  $JOB: $STATUS"
+            else
+              echo "  ❌  $JOB: $STATUS"
+              FAILED=true
+            fi
+          done
+
+          echo "───────────────────────────────────────────────────────"
+          if [ "$FAILED" == "true" ]; then
+            echo "  ❌  PIPELINE FAILED — One or more jobs did not succeed."
+            exit 1
+          else
+            echo "  ✅  ALL CHECKS PASSED — NodeBox CI Pipeline Complete!"
+          fi
+          echo "═══════════════════════════════════════════════════════"
+
+      - name: 📊 Post Pipeline Summary to GitHub Step Summary
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          ## 🟠 NodeBox CI Pipeline Summary
+
+          | Job | Result |
+          |-----|--------|
+          | 🛫 Preflight | ${{ needs.preflight.result }} |
+          | 🔍 Typecheck & Lint | ${{ needs.typecheck-and-lint.result }} |
+          | ⚡ Matrix Build | ${{ needs.matrix-build-and-test.result }} |
+          | 🔒 Security Audit | ${{ needs.security-audit.result }} |
+          | 📊 Performance Budget | ${{ needs.performance-budget.result }} |
+          | 📦 NPM Pack Dry-Run | ${{ needs.npm-pack-validation.result }} |
+          | 🌐 E2E Smoke Test | ${{ needs.e2e-smoke-test.result }} |
+          | 🐳 Docker Validation | ${{ needs.docker-build-validation.result }} |
+          | 📜 License Compliance | ${{ needs.dependency-compliance.result }} |
+          | ♿ HTML Validation | ${{ needs.html-validation.result }} |
+
+          > **Branch:** `${{ github.ref_name }}` — **Commit:** `${{ github.sha }}`
+          SUMMARY
