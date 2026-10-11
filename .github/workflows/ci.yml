@@ -39,6 +39,10 @@ on:
         type: boolean
         default: false
 
+# Restrict default GITHUB_TOKEN permissions for all jobs in this workflow.
+permissions:
+  contents: read
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Concurrency: cancel in-progress runs on the same branch/PR to save runners
 # ─────────────────────────────────────────────────────────────────────────────
